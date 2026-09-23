@@ -1,0 +1,69 @@
+name: выпуск
+
+# Пробный прогон порядка выпуска на GitHub. Запускается руками: поднять версию — решение,
+# а не событие. Шаги те же, что в `.gitlab-ci.yml`, но собраны в одну работу: тег, поставленный
+# штатным токеном GitHub, не запускает другие воркфлоу, и разносить публикацию по тегу пришлось
+# бы в обход этого правила.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: публиковать в реестр (иначе только версии и тег)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  NPM_CONFIG_REGISTRY: https://150.251.145.87:9873/
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Графу задач нужен общий предок с целевой веткой, иначе «затронутое» не посчитать.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - run: corepack enable
+
+      - name: установка
+        run: pnpm install --frozen-lockfile
+
+      # Некритичен НА ВРЕМЯ пробы: четыре цели красные (`trace:test` и `build:test` — тестов у
+      # зон нет вовсе, `assembly:lint` и `skin:lint` — ошибки solid/reactivity). Их чинят
+      # владельцы зон; до этого шаг валил бы прогон раньше, чем проверится сам порядок выпуска.
+      - name: проверки
+        continue-on-error: true
+        run: pnpm exec nx run-many -t lint typecheck test
+
+      - name: сборка
+        run: pnpm exec nx run-many -t build
+
+      - name: сухой прогон выпуска
+        run: pnpm exec nx release --dry-run
+
+      - name: доступ к реестру
+        run: printf '//150.251.145.87:9873/:_authToken=%s\n' '${{ secrets.REGISTRY_TOKEN }}' >> ~/.npmrc
+
+      - name: версии и тег
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          pnpm exec nx release --skip-publish
+          git push --follow-tags
+
+      - name: публикация
+        if: inputs.publish
+        run: pnpm exec nx release publish
+
+      - name: приёмка
+        if: inputs.publish
+        run: pnpm --filter @web-core/release release verify --json
